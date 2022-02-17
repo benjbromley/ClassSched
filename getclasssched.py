@@ -4,10 +4,19 @@
 import subprocess
 import pandas as pd
 import sys
+import os
+from pathlib import Path
 
+semester = []
+from datetime import datetime
+thismonth = datetime.now().month
+thisyear = datetime.now().year
 
-semester = [ 1124, 1126, 1128, 1134,1136, 1138, 1144, 1146, 1148, 1154, 1156, 1158, 1164, 1166, 1168, 1174, 1176, 1178, 1184, 1186, 1188, 1194, 1196, 1198, 1204, 1206, 1208, 1214, 1216, 1218 ]
-
+for yr in range(2006,thisyear+1):
+    yrstr = '%02d'%(yr-2000)
+    for semcode in ['4','6','8']:
+        if yr==thisyear and thismonth <= (int(semcode)-4)*2: break
+        semester.append(int('1'+yrstr+semcode))
 
 subject = ["PHYS","ASTR"]
 
@@ -24,7 +33,7 @@ df = pd.DataFrame(columns=columns)
 
 def semx(x):
     si = ((x%10)-4)//2
-    return ['S','U','F'][si]+str((x-1000)//10)
+    return ['S','U','F'][si]+'%02d'%((x-1000)//10)
 
 def invsemx(x):
     y = 1000 + int(x[1:3])*10
@@ -35,7 +44,7 @@ def invsemx(x):
 
 # ====
 
-mode = "full"  
+mode = "getenrollment"  
 #mode = "listfac" # just list who is teaching
 
 
@@ -48,6 +57,9 @@ if len(sys.argv)>1:
 else:
     print('usage:',sys.argv[0],'all|S22 F12 [etc]')
     quit()
+
+
+
 
 def spandex(x):
     if not 'span' in x: return x.strip()
@@ -91,8 +103,8 @@ def parselinesClassSched(lines,columns):
             # instrthis+=' <'+unidthis+'@utah.edu>'
             if not instrthis in instrlis:
                 instrlis.append(instrthis)
-                ser.Instructor = myappendlist(ser.Instructor,instrthis)
-                ser.uNID = myappendlist(ser.uNID,unidthis)
+            ser.Instructor = myappendlist(ser.Instructor,instrthis)
+            ser.uNID = myappendlist(ser.uNID,unidthis)
         if 'Class Number:' in line:
             classno = spandex(lines[i+1]);  # this is messy
             if "name=" in classno:
@@ -117,16 +129,20 @@ def parselinesClassSched(lines,columns):
         if 'Fees' in line:
             fees = lines[i+1].strip()
             ser.Fees = myappendlist(ser.Fees,fees)
+        if 'Units' in line:
+            units = spandex(line).strip()
+            ser.Units = units
         if 'Meets With' in line:
             for j in range(99):
-                if '<li>' in lines[i+1+j]:
-                    meetswiththis = line[i+1+j].split('li>')[1].split('</li')[0]
-                    ser.MeetsWith = myappend(set.MeetsWith,meetswiththis) 
+                if '<li>' in lines[i+2+j]:
+                    meetswiththis = lines[i+2+j].split('li>')[1].split('</')[0]
+                    ser.MeetsWith = myappendlist(ser.MeetsWith,meetswiththis)
                 else:
                     break
         # are we done with this class?
         if (('class="class-info card mt-3"' in line) and (catno != "")) or ("END MAIN CONTENT" in line):
-            df = df.append(ser,ignore_index=True)
+            if len(ser.Instructor)>1:
+                df = df.append(ser,ignore_index=True)
             ser = pd.Series(['']*len(columns),index=columns)
     return df
 
@@ -158,8 +174,7 @@ def parselinesEnrollment(lines,columnsenroll):
                 df = df.append(ser,ignore_index=True)
     return df
 
-
-def getClassSched(semnm,subj):
+def getClassSched(sem,subj):
     global columns
     text = ""
     cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/main/'+str(sem)+'/class_list.html?subject='+subj+'"  2>&1'
@@ -171,7 +186,7 @@ def getClassSched(semnm,subj):
     return df
 
 
-def getEnrollment(semnm,subj):
+def getEnrollment(sem,subj):
     global columnsenroll
     text = ''
     cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/main/'+str(sem)+'/seating_availability.html?subject='+subj+'"  2>&1'
@@ -182,24 +197,35 @@ def getEnrollment(semnm,subj):
     dfenroll = parselinesEnrollment(lines,columnsenroll)
     return dfenroll
 
-
 #pd.set_option('max_row', None)
 #pd.set_option('max_column', None)
 
 for sem in semester:
     semnm = semx(sem)
     for subj in subject:
-        # if subj=="PHYS": continue
-        # get main class schedule info
-        df = getClassSched(semnm,subj)
-        # add in enrollment info
-        dfen = getEnrollment(semnm,subj)
-        #df, dfen should have same order....
-        for i,classno in enumerate(df.ClassNo): # bromley you C coward
-            en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
-            df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available 
+        if subj=='ASTR' and int(sem) < 1074: continue
+        fname = 'data/ClassSched'+str(sem)+'_'+subj+'.csv'
+        fil = Path(fname)
+        #if False:
+        if fil.is_file():
+            #print('reading from',fname)
+            df = pd.read_csv(fname, sep=',',na_filter= False,dtype=str)
+        else: 
+            # get main class schedule info
+            df = getClassSched(sem,subj)
+            # add in enrollment info
+            dfen = getEnrollment(sem,subj)
+            #df, dfen should have same order....
+            for i,classno in enumerate(df.ClassNo): # bromley you C coward
+                en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
+                df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available 
+            print('writing to',fname)
+            df.to_csv(fname,sep=',')
 
-
+        if mode == "getenrollment":
+            for cno,sec,en,instr in zip(df["CatNo"],df["Section"],df["Enrollment"],df["Instructor"]):
+                print('%3s %4s %3s-%3s : %3s   [%s]'%(semnm,subj,cno,sec,en,instr))
+        #print(df)
 quit()
 
 if mode == "full": quit()
@@ -214,8 +240,6 @@ instrlis = set(instrlis)
 instrlis = sorted(instrlis)
 for instr in instrlis:
     print(instr)
-
-
 
 
 
