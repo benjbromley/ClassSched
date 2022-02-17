@@ -5,7 +5,9 @@ import subprocess
 import pandas as pd
 import sys
 import os
-from pathlib import Path
+
+savethedata = True
+#savethedata = False
 
 semester = []
 from datetime import datetime
@@ -57,9 +59,6 @@ if len(sys.argv)>1:
 else:
     print('usage:',sys.argv[0],'all|S22 F12 [etc]')
     quit()
-
-
-
 
 def spandex(x):
     if not 'span' in x: return x.strip()
@@ -200,17 +199,29 @@ def getEnrollment(sem,subj):
 #pd.set_option('max_row', None)
 #pd.set_option('max_column', None)
 
+def do_census(df):
+    msk = ~df.Units.str.contains('-')
+    tot = df.loc[msk].Enrollment.astype(float).sum()
+    sch = (df.loc[msk].Enrollment.astype(float)*df[msk].Units.astype(float)).sum()
+    return tot,sch
+    
+
+
+datadir = 'Data' # subdir off of working dir where we keep csv files so we do not have to (slowly) hit CIS
 for sem in semester:
     semnm = semx(sem)
+    totsem,schsem = 0,0
     for subj in subject:
         if subj=='ASTR' and int(sem) < 1074: continue
-        fname = 'data/ClassSched'+str(sem)+'_'+subj+'.csv'
-        fil = Path(fname)
-        #if False:
-        if fil.is_file():
+        
+        fname = datadir+'/ClassSched'+str(sem)+'_'+subj+'.csv'
+        if savethedata and os.path.isfile(fname):
             #print('reading from',fname)
             df = pd.read_csv(fname, sep=',',na_filter= False,dtype=str)
-        else: 
+        else:
+            if not os.path.isdir(datadir):
+                print('please "mkdir Data" so we have a place to put saved data. or change savethedata to False.')
+                quit()
             # get main class schedule info
             df = getClassSched(sem,subj)
             # add in enrollment info
@@ -219,12 +230,19 @@ for sem in semester:
             for i,classno in enumerate(df.ClassNo): # bromley you C coward
                 en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
                 df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available 
-            print('writing to',fname)
+            print('# writing to',fname)
             df.to_csv(fname,sep=',')
 
         if mode == "getenrollment":
-            for cno,sec,en,instr in zip(df["CatNo"],df["Section"],df["Enrollment"],df["Instructor"]):
-                print('%3s %4s %3s-%3s : %3s   [%s]'%(semnm,subj,cno,sec,en,instr))
+            print('# Semester Subj Course-Section: Enrollment [more info!]')
+            for cno,sec,en,instr,comp,un in zip(df["CatNo"],df["Section"],df["Enrollment"],df["Instructor"],df["Component"],df.Units):
+                print('%3s %4s %4s-%3s: %3s      [units: %3s; %-12s; %s]'%(semnm,subj,cno,sec,en,un,comp,instr))
+            tot, sch = do_census(df)
+            totsem += tot
+            schsem += sch
+            
+        if mode == "getenrollment":
+            print('#',semnm,'total enrollment, SCH:',totsem,schsem)
         #print(df)
 quit()
 
