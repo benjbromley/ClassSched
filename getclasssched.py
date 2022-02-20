@@ -1,26 +1,33 @@
 #!/usr/uumath/bin/python3.8
 
-
 import subprocess
 import pandas as pd
 import sys
 import os
+import numpy as np
 
 savethedata = True
 #savethedata = False
+
+Include_SANDY = False
+Last_Ten_Years = False
+Merge_CrossList = False
+Show_All_Sections = False # include Units==0 (e.g., discussion sections)
 
 semester = []
 from datetime import datetime
 thismonth = datetime.now().month
 thisyear = datetime.now().year
+startyear = 2006
+if Last_Ten_Years: startyear = thisyear-10
 
-for yr in range(2006,thisyear+1):
+for yr in range(startyear,thisyear+1):
     yrstr = '%02d'%(yr-2000)
     for semcode in ['4','6','8']:
         if yr==thisyear and thismonth <= (int(semcode)-4)*2: break
         semester.append(int('1'+yrstr+semcode))
 
-subject = ["PHYS","ASTR"]
+Subject = ["ASTR","PHYS"]
 
 #subject = ['PHYS']
 #semester = [1218]
@@ -30,8 +37,6 @@ columns=["Instructor","uNID","ClassNo","Subj","CatNo","Section","Title","Semeste
 
 # spirit of this, we collect whatever is on the CIS pages.
 # some fields are lists, but I may just collect them as a delimited string. think about this.
-
-df = pd.DataFrame(columns=columns)
 
 def semx(x):
     si = ((x%10)-4)//2
@@ -46,7 +51,8 @@ def invsemx(x):
 
 # ====
 
-mode = "getenrollment"  
+mode = "get enrollment with census"  
+
 #mode = "listfac" # just list who is teaching
 
 
@@ -123,14 +129,16 @@ def parselinesClassSched(lines,columns):
             ser.Times = myappendlist(ser.Times,times)
         if 'http://map.utah.edu/index.htm' in line:
             loc = deref(line.strip())
-            #loc = spandex('<span '+line).strip()
+            ser.Location = myappendlist(ser.Location,loc)
+        if "https://sandy.utah.edu/" in line:
+            loc = deref(line.strip())
             ser.Location = myappendlist(ser.Location,loc)
         if 'Fees' in line:
             fees = lines[i+1].strip()
             ser.Fees = myappendlist(ser.Fees,fees)
         if 'Units' in line:
             units = spandex(line).strip()
-            ser.Units = units
+            ser.Units = units.replace(' ','')
         if 'Meets With' in line:
             for j in range(99):
                 if '<li>' in lines[i+2+j]:
@@ -199,24 +207,103 @@ def getEnrollment(sem,subj):
 #pd.set_option('max_row', None)
 #pd.set_option('max_column', None)
 
-def do_census(df):
-    msk = ~df.Units.str.contains('-')
-    tot = df.loc[msk].Enrollment.astype(float).sum()
-    sch = (df.loc[msk].Enrollment.astype(float)*df[msk].Units.astype(float)).sum()
-    return tot,sch
+def do_census(df,subjlist=Subject,include_SANDY=Include_SANDY):
+    en = np.zeros(len(subjlist))
+    sch = np.zeros(en.shape)
+    for i,subj in enumerate(subjlist):
+        dfthis = df[df.Subj == subj].copy()
+        if len(dfthis.index)==0:
+            continue
+        dfthis.MyField = pd.to_numeric(dfthis.Units,errors='coerce')
+        msk = (dfthis.MyField != np.nan) & (dfthis.MyField > 0.0) & (dfthis.MyField < 99.0)
+        if include_SANDY == False:
+            msk &= ~(dfthis.Location.str.contains('SANDY')|((dfthis.CatNo.str[0]=='2')&(dfthis.Section.str.contains('070'))))
+        en[i] = dfthis.loc[msk].Enrollment.astype(float).sum()
+        sch[i] = (dfthis.loc[msk].Enrollment.astype(float)*dfthis[msk].Units.astype(float)).sum()
+    return en,sch
+
+
+def do_enrollment(df,subjlist=Subject,merge_crosslist=Merge_CrossList,show_all_sections=Show_All_Sections,\
+                  include_SANDY=Include_SANDY,verbose=True):
+    global columns
+    dfx = df.copy() #  pd.DataFrame(columns=columns)
+    dfx.MyField = pd.to_numeric(dfx.Units,errors='coerce')  # myfield is numerical units!!!
+    dfx[dfx.MyField==np.nan].MyField = -1.0
+    msk = [True]*len(dfx.index)
+    if show_all_sections == False:
+        msk &= dfx.MyField>=0  # don't include anything with undefined units
+    if include_SANDY == False:
+        msk &= ~(dfx.Location.str.contains('SANDY')|((dfx.CatNo.str[0]=='2')&(dfx.Section.str.contains('070'))))
+    dfx = dfx[msk]
+    if merge_crosslist:
+        dfx.MyField = (dfx.MyField>0).astype(str)
+        msk = (dfx.duplicated(subset=["Instructor","Title","MyField"],keep=False))
+        dfx.MyField[msk] = dfx.Instructor[msk]+dfx.Title[msk]
+        xlis = sorted(set(dfx.MyField[msk].tolist()))
+        for x in xlis:
+            msk2 = (dfx.MyField==x) & msk
+            subjx,cnox,enx = dfx.Subj[msk2].tolist(),dfx.CatNo[msk2].tolist(),dfx.Enrollment[msk2].astype(int).sum()
+            if len(set(cnox))==1 and len(set(subjx))==1: # probably a lab or discussion section, not a xlist
+                continue
+            dfx.MyField[msk2] = 'DUPLICATE'
+            j1 = np.argmax(msk2)
+            msk2[msk2] = False
+            msk2.iat[j1]=True  # select the one class to save, will be getting rid of the duplicate(s)
+            dfx.MyField[msk2] = 'SAVE'
+            if len(set(subjx))>1 and  len(set(cnox))==1: # we're merging classes across subjects # assume only one subject
+                subj = '+'.join(sorted(subjx))
+                dfx.Subj[msk2] = subj
+            elif len(set(cnox))>1 and len(set(subjx))==1: # we're merging classes across catnos # assume only one subject
+                cno = '+'.join(sorted(cnox))
+                dfx.CatNo[msk2] = cno
+            elif len(set(cnox))>1 and len(set(subjx))>1: # multiple subjects and multiple catnos, no way to test this yet!
+                subj = '/'.join(subjx)
+                cno = '/'.join(cnox)
+                dfx.CatNo[msk2] = cno
+                dfx.Subj[msk2] = subj
+            dfx.Enrollment[msk2] = enx
+        dfx = dfx[~(dfx.MyField == 'DUPLICATE')]
+
+    if verbose:
+        more_info = True
+        print('# Semester Subj Course-Section: Enrollment',end='')
+        if more_info: print(' [more info!]',end='')
+        print('')
     
+        zz = zip(dfx.Semester,dfx.Subj,dfx.CatNo,dfx.Section,dfx.Enrollment,\
+                 dfx.Instructor,dfx.Component,dfx.Units,dfx.Title)
+        for se,su,cno,sec,en,instr,comp,un,ti in zz:
+            #print(se,su,cno,sec,en,instr,comp,un,ti)
+            #continue
+            sesucno = '%3s %4s %4s'%(se,su,cno)
+            if show_all_sections:
+                sesucnosec = '%s-%3s units=%s'%(sesucno,sec,un)
+                print('%-32s'%(sesucnosec),end='')
+            else:
+                print('%-20s'%(sesucno),end='')
+            print('    %3s     '%(en),end='')
+            moin = ''
+            if more_info:
+                if show_all_sections:
+                    moin += '"%s"; %s; '%(ti,comp)
+                else:
+                    moin += '%-26s '%('"'+ti+'",')
+                moin += instr
+                print('[%s]'%(moin),end='')
+            print('')
+    return
 
 
 datadir = 'Data' # subdir off of working dir where we keep csv files so we do not have to (slowly) hit CIS
 for sem in semester:
     semnm = semx(sem)
     totsem,schsem = 0,0
-    for subj in subject:
+    dfsem = pd.DataFrame(columns=columns) # includes all subjects
+    for subj in Subject:
         if subj=='ASTR' and int(sem) < 1074: continue
         
         fname = datadir+'/ClassSched'+str(sem)+'_'+subj+'.csv'
         if savethedata and os.path.isfile(fname):
-            #print('reading from',fname)
             df = pd.read_csv(fname, sep=',',na_filter= False,dtype=str)
         else:
             if not os.path.isdir(datadir):
@@ -226,129 +313,22 @@ for sem in semester:
             df = getClassSched(sem,subj)
             # add in enrollment info
             dfen = getEnrollment(sem,subj)
-            #df, dfen should have same order....
+            # merge enrollment data and classsched data. 
             for i,classno in enumerate(df.ClassNo): # bromley you C coward
                 en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
                 df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available 
             print('# writing to',fname)
             df.to_csv(fname,sep=',')
 
-        if mode == "getenrollment":
-            print('# Semester Subj Course-Section: Enrollment [more info!]')
-            for cno,sec,en,instr,comp,un in zip(df["CatNo"],df["Section"],df["Enrollment"],df["Instructor"],df["Component"],df.Units):
-                print('%3s %4s %4s-%3s: %3s      [units: %3s; %-12s; %s]'%(semnm,subj,cno,sec,en,un,comp,instr))
-            tot, sch = do_census(df)
-            totsem += tot
-            schsem += sch
-            
-        if mode == "getenrollment":
-            print('#',semnm,'total enrollment, SCH:',totsem,schsem)
+        dfsem = dfsem.append(df)
+
+    if "enroll" in mode:
+        do_enrollment(dfsem)
+    if "census" in mode:        
+        en, sch = do_census(dfsem)
+        for j,subj in enumerate(Subject):
+            print('#',semnm,subj,'enrollment, SCH:',en[j],sch[j])
+        print('#',semnm,'total enrollment, SCH:',np.sum(np.array(en)),np.sum(np.array(sch)))
         #print(df)
 quit()
 
-if mode == "full": quit()
-
-instrlis = []
-
-for r in rec:
-    instr = r.split(',')[0]+','+r.split(',')[1]
-    instrlis.append(instr)
-    
-instrlis = set(instrlis)
-instrlis = sorted(instrlis)
-for instr in instrlis:
-    print(instr)
-
-
-
-'''
-            #classno = ((line.split('catno=')[1]).split('>')[1]).split('<')[0]
-            #section = ((line.split('section=')[1]).split('>')[1]).split('<')[0]
-        if 'data-day' in line:
-            days = (line.split('data-day="')[1]).split('"')[0]
-        if 'data-tim' in line:
-            time = (line.split('data-time="')[1]).split('>')[1].split('<')[0]
-            instlist.append(str(sem)+' '+classno+' '+section+' '+component+' '+days+' '+time+' '+instruct)
-            gotinst = False
-        if 'Type' in line:
-            isonline = True
-            #instlist.append(str(sem)+' '+classno+' '+section+' '+component+' Online '+instruct)
-        if 'Component:' in line:
-            componentarea = True
-        elif  componentarea:
-            component = line.split('span')[1].split('>')[1].split('<')[0]
-            componentarea = False
-            thisdata = str(sem)+' '+classno+' '+section+' '+component+' Online '+instruct
-        if 'Instructor:' in line:
-            instructarea = True
-        if instructarea:
-            if 'href' in line:
-                instruct = (line.split('>')[1]).split('<')[0]
-                gotinst = True
-                print(instruct,classno,section)
-        if 'href' in line and instructarea:
-            instructarea = False
-
-instlist = list(set(instlist))
-instlist = sorted(instlist)
-
-#instlist = [semx(x.split(' ')[0])+' '.join(x.split(' ')[1:]) for x in instlist]
-
-newlist = []
-for il in instlist: # cull 3-digit classes
-    it = il.split(' ')
-    snm = semx(int(it[0]))
-    classno,section = int(it[1]),int(it[2])
-    if classno < 1000: continue
-    # if it[3] == "Discussion": continue
-    #    if section % 10 != 1: continue
-    newlist.append(snm+' '+il)
-instlist = newlist
-
-# fucking nightmare...
-
-newlist = []
-i = 0
-while i<len(instlist)-1: # get rid if dups from mistakes in main code...
-    il = instlist[i]
-    ill = instlist[i+1]
-    ils = il.split()
-    ills = ill.split()
-    if ils[:4] == ills[:4]:
-        if 'Online' in il:
-            newlist.append(ill)
-        else:
-            newlist.append(il)
-        i+= 2
-    else:
-        newlist.append(il)
-        i += 1
-instlist = newlist
-
-
-for il in instlist:
-    print(il)
-
-
-
-quit()
-
-instonly = []
-for i in instlist:
-    pieces =i.split(' ')
-    subj = pieces[0]
-    num = int(pieces[1])
-    inst = ' '.join(pieces[2:])
-    #if num>999:
-    #    print(subj,num,inst)
-    instonly.append(inst)
-
-
-
-# quit()
-#instonly = list(set(instonly))
-instonly = sorted(instonly)
-for i in instonly:
-    print(i)
-
-'''
