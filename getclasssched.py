@@ -70,6 +70,13 @@ def invsemx(x):
     else: y += 8
     return y
 
+def enrollmerge(enstr): #
+    #
+    if type(enstr) is str:
+        return str(sum([int(x) for x in enstr.split('+')]))
+    en = [enrollmerge(x) for x in enstr]
+    return en
+
 # ====
 
 def usage():
@@ -300,13 +307,15 @@ def do_census(df,subjlist=Subject,include_SANDY=Include_SANDY):
     sch = np.zeros(en.shape)
     for i,subj in enumerate(subjlist):
         dfthis = df[df.Subj == subj].copy()
+        dfthis.Enrollment = enrollmerge(dfthis.Enrollment.tolist())
         if len(dfthis.index)==0:
             continue
         dfthis.MyField = pd.to_numeric(dfthis.Units,errors='coerce')
         msk = (dfthis.MyField != np.nan) & (dfthis.MyField > 0.0) & (dfthis.MyField < 99.0)
         if include_SANDY == False:
             msk &= ~(dfthis.Location.str.contains('SANDY')|((dfthis.CatNo.str[0]=='2')&(dfthis.Section.str.contains('070'))))
-        en[i] = dfthis.loc[msk].Enrollment.astype(float).sum()
+        # convert enrollments, e.g., "2+4" or "199" to ints
+        en[i] = np.sum(np.array(dfthis.loc[msk].Enrollment.tolist()).astype(int))
         sch[i] = (dfthis.loc[msk].Enrollment.astype(float)*dfthis[msk].Units.astype(float)).sum()
     return en,sch
 
@@ -352,16 +361,18 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
         xlis = sorted(set(dfx.MyField[msk].tolist()))
         for x in xlis:
             msk2 = (dfx.MyField==x) & msk
-            subjx,cnox,enx = dfx.Subj[msk2].tolist(),dfx.CatNo[msk2].tolist(),dfx.Enrollment[msk2].astype(int).sum()
+            subjx,cnox,enx = dfx.Subj[msk2].tolist(),dfx.CatNo[msk2].tolist(),dfx.Enrollment[msk2].tolist()
             if len(set(cnox))==1 and len(set(subjx))==1: # probably a lab or discussion section, not a xlist
                 continue
             merged = False
             if len(set(subjx))>1 and len(set(cnox))==1 and merge_xlist: # we're merging classes across subjects # assume only one catno
                 merged = True
+                enx = '+'.join([x for _, x in sorted(zip(subjx,enx))])
                 subj = '+'.join(sorted(subjx))
                 dfx.Subj[msk2] = subj
             elif len(set(cnox))>1 and len(set(subjx))==1 and merge_cotaught: # we're merging classes across catnos w/ only one subject
                 merged = True
+                enx = '+'.join([x for _, x in sorted(zip(cnox,enx))])
                 cno = '+'.join(sorted(cnox))
                 dfx.CatNo[msk2] = cno
             elif len(set(cnox))>1 and len(set(subjx))>1 and merge_xlist and merge_cotaught:
@@ -369,6 +380,7 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
                 merged = True
                 subj = '/'.join(subjx)
                 cno = '/'.join(cnox)
+                enx = '/'.join(enx)
                 dfx.CatNo[msk2] = cno
                 dfx.Subj[msk2] = subj
             if merged:
@@ -399,8 +411,8 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
             else:
                 if len(cno)<4 and int(en)<1 and not show_all_sections:
                     continue
-                print('%-20s'%(sesucno),end='')
-            print(' %3s     '%(en),end='')
+                print('%-18s'%(sesucno),end='')
+            print(' %7s   '%(en),end='')
             moin = ''
             if long_list:
                 instr = instr.replace('|','; ')
@@ -416,6 +428,7 @@ FacLis = []
 FacEn = {}
 
 def do_faclist(df,summary=False,summarysort="a-z"):
+    global CatNoFilter, InstrFilter
     if summary:
         fl = [f for f in FacEn]
         if summarysort == 'a-z':
@@ -433,15 +446,25 @@ def do_faclist(df,summary=False,summarysort="a-z"):
             facnames.append(f)
     facnames = sorted(list(set(facnames)))
     for f in facnames:
+        if len(InstrFilter):
+            ok = False
+            for inf in InstrFilter:
+                if inf in f:
+                    ok = True
+                    break
+            if not ok:
+                continue
         msk = df.Instructor.str.contains(f)
-        sem,subjs,cnos,secs,ens = df.Semester[msk],df.Subj[msk],df.CatNo[msk],df.Section[msk],df.Enrollment[msk]
-        for sm,su,cn,se,en in zip(sem,subjs,cnos,secs,ens):
-            print(f,sm,su,cn,se,en)
+        sem,subjs,cnos,secs,ens,uns = df.Semester[msk],df.Subj[msk],df.CatNo[msk],df.Section[msk],df.Enrollment[msk],df.Units[msk]
+        for sm,su,cn,se,en,un in zip(sem,subjs,cnos,secs,ens,uns):
+            enx = enrollmerge(en)
+            enx = int(enx)*(0 if ('-' in un) else 1)
             if f in FacEn:
-                FacEn[f] += int(np.sum(np.int(en)))
+                FacEn[f] += enx
             else:
-                FacEn[f] = int(np.sum(np.int(en)))
-
+                FacEn[f] = enx
+            print('%s: %s %s %s-%s %s '%(f,sm,su,cn,se,en))
+            
 datadir = 'Data' # subdir off of working dir where we keep csv files so we do not have to (slowly) hit CIS
 
 if len(sys.argv) > 1:
