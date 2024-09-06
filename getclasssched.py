@@ -1,10 +1,14 @@
-#!/Usr/uumath/bin/python3.8
+#!/usr/plocal/bin/python3
+
 
 import subprocess
 import pandas as pd
 import sys
 import os
 import numpy as np
+from datetime import datetime
+
+baseurl ='https://class-schedule.app.utah.edu'
 
 savethedata = True
 #savethedata = False
@@ -21,6 +25,7 @@ CatNoFilter = []  # grep-like filters for catalog #s and Instructors. see do_enr
 InstrFilter = []
 
 NSemestersShown = 0
+
 
 def setparms(mode):
     global Include_SANDY, Last_Ten_Years, Merge_CrossList, Merge_TaughtTogether, Include_All_Sections, Include_AOCE, Long_Listing
@@ -54,7 +59,7 @@ def showparms():
     return
 
 columnsenroll = ["ClassNo","Subj","CatNo","Section","Title","Semester","Cap","Wait","Enrollment","Available"]
-columns=["Instructor","uNID","ClassNo","Subj","CatNo","Section","Title","Semester","Type","Component","Location","Days","Times","Units","MeetsWith","Fees","Cap","Wait","Enrollment","Available","MyField"]
+columns=["Instructor","uNID","ClassNo","Subj","CatNo","Section","Title","Semester","Type","Component","Location","Days","Times","Units","MeetsWith","Fees","Requisites","Cap","Wait","Enrollment","Available","MyField"]
 
 # spirit of this, we collect whatever is on the CIS pages.
 # some fields are lists, but I may just collect them as a delimited string. think about this.
@@ -73,45 +78,61 @@ def invsemx(x):
 def enrollmerge(enstr): #
     #
     if type(enstr) is str:
-        return str(sum([int(x) for x in enstr.split('+')]))
+        #print(enstr,'xxx')
+        enstrtmp = enstr.replace('/','+')
+        return str(sum([int(x) for x in enstrtmp.split('+')]))
     en = [enrollmerge(x) for x in enstr]
     return en
 
 # ====
 
 def usage():
-    print('usage:',sys.argv[0],'[-all|-long|-sandy|-listfaculty] arg1 [arg2 arg3...]')
+    print('usage:',sys.argv[0],'[-all|-long|-sandy|-listinstructors|-instructors] arg1 [arg2 arg3...]')
     print('lists courses and enrollments by semester, as provided by the CIS Class Schedule pages.')
     print('args:')
     print('      * a catalog number ("1060") or an instructor name ("Ben") to limit listings accordingly')
     print('      * a semester "S22"=Spring Semester 2022.')
-    print('directives')
+    print('directives:')
     print('      -all: show all semesters I could find on CIS (seems to start at 2006; NB: overrides user\'s args).')
     print('      -long: list in a more detailed output format.')
     print('      -sandy: include Sandy campus offerings')
+    print('      -instructors output by instructor')
+    print('      -listinstructors summarizes instructors w/total enrollment (use -all for everything in CIS)')
     return
 
+
+# main online uac ..? uac is the Korea campus
+Campus = 'main'
+# Campus = 'uac'
 
 Semester = []
 Subject = ["ASTR","PHYS"]
 mode = '-enrollment'
 
+# to do: argparse...
 if len(sys.argv)>1:
     argv = []
     for a in sys.argv[1:]:
         if a[0]=='-':
             if a in '-long':
                 mode += a
-            elif a in '-listfaculty' or a in '-faculty':
-                mode += '-listfaculty'
-                mode = mode.replace('-enrollment','')
+            elif a in '-listinstructors' or a in '-instructors':
+                if a in '-listinstructors':
+                    mode += '-listinstructors' # does a summary list
+                else:
+                    mode += '-instructors' # give details
+                mode = mode.replace('-enrollment','') # why?
             elif a.lower() in '-sandy':
                 mode += '-sandy'
             elif a.lower() in '-all':
                 mode += '-all'
             elif a.lower() in '-aoce':
                 mode += '-aoce'
-            elif a.lower() in '--Help' or a[:2] == '-h':
+            elif '-subj=' in a.lower():
+                print(Subject)
+                Subject = [a.split('j=')[1]]
+                print(Subject)
+            elif a.lower() in '--help' or a[:2] == '-h':
                 usage()
                 quit()
             else:
@@ -148,18 +169,38 @@ if len(sys.argv)>1:
 setparms(mode)
 
 if len(Semester)<1:
-    from datetime import datetime
     thismonth = datetime.now().month
     thisyear = datetime.now().year
     startyear = 2006
     if Last_Ten_Years: startyear = thisyear-10
-
     for yr in range(startyear,thisyear+1):
         yrstr = '%02d'%(yr-2000)
         for semcode in ['4','6','8']:
             if yr==thisyear and thismonth <= (int(semcode)-4)*2: break
             Semester.append(int('1'+yrstr+semcode))
 
+
+def AtCensus(sem): # expect 1228, for example, main campus 1, yr [20]22 sem 8=Fall
+    thismonth = datetime.now().month
+    thisyear = datetime.now().year
+    thiscode = 4
+    startmonth = 1
+    if (thismonth > 3):
+        thiscode = 6
+        startmonth = 5
+    if (thismonth > 6):
+        thiscode = 8
+        startmonth = 9 # 8 really
+    semyear = 2000+(int(sem)%1000)//10
+    semcode = int(sem)%10
+    atc = 0
+    if (thisyear>semyear):
+        atc = 1
+    elif (thisyear==semyear and thiscode > semcode):
+        atc = 1
+    elif (thisyear==semyear and thiscode == semcode and thismonth > startmonth):
+        atc = 1
+    return atc
 
 def spandex(x):
     if not 'span' in x: return x.strip()
@@ -195,7 +236,9 @@ def parselinesClassSched(lines,columns):
                 title = deref(lines[i+4]).replace('&amp;','&').strip()
             ser.Title = title
         if 'Instructor:' in line:
-            instinfo = lines[i+3]
+            for di in range(1,4):
+                if 'faculty' in lines[i+di] or 'STAFF' in lines[i+di]: break
+            instinfo = lines[i+di]
             if not 'faculty.utah.edu' in instinfo:
                 print('cannot find instructor.'); quit()
             instrthis = instinfo.split('>')[1].split('<')[0].strip()
@@ -213,6 +256,9 @@ def parselinesClassSched(lines,columns):
         if 'Component:' in line:
             comp = spandex(lines[i+1]);
             ser.Component = comp
+        if 'Requisites:' in line:
+            if "Yes" in line.split('Requisites:')[1]:
+                ser.Requisites = "Yes" # sigh...
         if 'Type:' in line:
             typetype = spandex(lines[i+3]).strip()
             ser.Type = typetype
@@ -220,7 +266,10 @@ def parselinesClassSched(lines,columns):
             days = spandex(line).strip()
             ser.Days = myappendlist(ser.Days,days)
         if 'data-time' in line:
-            times = spandex('<span '+line).strip()
+            linx = line
+            if 'data-day' in linx:
+                linx = '<span data-time'+(line.split('data-time')[1])
+            times = spandex(linx).strip()
             ser.Times = myappendlist(ser.Times,times)
         if 'http://map.utah.edu/index.htm' in line:
             loc = deref(line.strip())
@@ -243,8 +292,12 @@ def parselinesClassSched(lines,columns):
                     break
         # are we done with this class?
         if (('class="class-info card mt-3"' in line) and (catno != "")) or ("END MAIN CONTENT" in line):
-            if len(ser.Instructor)>1:
-                df = df.append(ser,ignore_index=True)
+            #if len(ser.Instructor)>1:
+            #     df = df.append(ser,ignore_index=True)
+            if len(ser.Instructor)<=1:
+                ser.Instructor = "STAFF"
+            #df = df.append(ser,ignore_index=True)
+            df = pd.concat([df,ser.to_frame().T],ignore_index=True)
             ser = pd.Series(['']*len(columns),index=columns)
     return df
 
@@ -273,13 +326,17 @@ def parselinesEnrollment(lines,columnsenroll):
                     print('check',check,ser.Cap,ser.Enrollment,ser.Available)
                     print("we're fucked.")
                     quit()
-                df = df.append(ser,ignore_index=True)
+                #df = df.append(ser,ignore_index=True)
+                df = pd.concat([df,ser.to_frame().T],ignore_index=True)
+
     return df
 
-def getClassSched(sem,subj):
+def getClassSched(sem,subj,campus):
     global columns
     text = ""
-    cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/main/'+str(sem)+'/class_list.html?subject='+subj+'"  2>&1'
+    #cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/'+campus+'/'+str(sem)+'/class_list.html?subject='+subj+'"  2>&1'
+    cmd = 'curl -s "'+baseurl+'/'+campus+'/'+str(sem)+'/class_list.html?subject='+subj+'"  2>&1'
+    #print(cmd)
     lines = subprocess.getoutput(cmd)
     for i,line in enumerate(lines): # why?
         text += line
@@ -288,10 +345,11 @@ def getClassSched(sem,subj):
     return df
 
 
-def getEnrollment(sem,subj):
+def getEnrollment(sem,subj,campus):
     global columnsenroll
     text = ''
-    cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/main/'+str(sem)+'/seating_availability.html?subject='+subj+'"  2>&1'
+    #cmd = 'curl -s "https://student.apps.utah.edu/uofu/stu/ClassSchedules/'+campus+'/'+str(sem)+'/seating_availability.html?subject='+subj+'"  2>&1'
+    cmd = 'curl -s "'+baseurl+'/'+campus+'/'+str(sem)+'/seating_availability.html?subject='+subj+'"  2>&1'
     lines = subprocess.getoutput(cmd)
     for i,line in enumerate(lines):
         text += line
@@ -322,6 +380,7 @@ def do_census(df,subjlist=Subject,include_SANDY=Include_SANDY):
 
 def informal_names(nms):
     nmsinf = []
+    if 'STAFF' in nms: return 'Staff'
     for nm in nms.split('|'):
         nmx = nm.replace('&#39;',"'")
         nmx = nmx.title()
@@ -339,10 +398,15 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
     global columns,CatNoFilter,InstrFilter,NSemestersShown # make these cmd line args? yes, eventually....
     dfx = df.copy() #  pd.DataFrame(columns=columns)
     dfx.MyField = pd.to_numeric(dfx.Units,errors='coerce')  # myfield is numerical units!!!
+    # this is special: PHYS 3010 has Computer Lab 2 w/separate instructor but it's list
+    # as a separate section(s) (003, 005) 
+    dfx.loc[(dfx.CatNo=='3010')&(dfx.Section>'001'),'MyField']=0.0
+    # similar to Physics 5
+    dfx.loc[(dfx.CatNo=='4010')&(dfx.Section>'001'),'MyField']=0.0
     dfx[dfx.MyField==np.nan].MyField = -1.0
     msk = [True]*len(dfx.index)
     if  all_secs == False:
-        msk &= dfx.MyField>=0  # don't include anything with undefined units
+        msk &= (dfx.MyField>=0) # don't include anything with undefined units
     if include_SANDY == False:
         msk &= ~(dfx.Location.str.contains('SANDY')|((dfx.CatNo.str[0]=='2')&(dfx.Section.str.contains('070'))))
     if include_AOCE == 0:
@@ -362,17 +426,20 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
         for x in xlis:
             msk2 = (dfx.MyField==x) & msk
             subjx,cnox,enx = dfx.Subj[msk2].tolist(),dfx.CatNo[msk2].tolist(),dfx.Enrollment[msk2].tolist()
+            avx = dfx.Available[msk2].tolist()
             if len(set(cnox))==1 and len(set(subjx))==1: # probably a lab or discussion section, not a xlist
                 continue
             merged = False
             if len(set(subjx))>1 and len(set(cnox))==1 and merge_xlist: # we're merging classes across subjects # assume only one catno
                 merged = True
                 enx = '+'.join([x for _, x in sorted(zip(subjx,enx))])
+                avx = '+'.join([x for _, x in sorted(zip(subjx,avx))])
                 subj = '+'.join(sorted(subjx))
                 dfx.Subj[msk2] = subj
             elif len(set(cnox))>1 and len(set(subjx))==1 and merge_cotaught: # we're merging classes across catnos w/ only one subject
                 merged = True
                 enx = '+'.join([x for _, x in sorted(zip(cnox,enx))])
+                avx = '+'.join([x for _, x in sorted(zip(cnox,avx))])
                 cno = '+'.join(sorted(cnox))
                 dfx.CatNo[msk2] = cno
             elif len(set(cnox))>1 and len(set(subjx))>1 and merge_xlist and merge_cotaught:
@@ -381,6 +448,7 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
                 subj = '/'.join(subjx)
                 cno = '/'.join(cnox)
                 enx = '/'.join(enx)
+                avx = '/'.join(avx)
                 dfx.CatNo[msk2] = cno
                 dfx.Subj[msk2] = subj
             if merged:
@@ -390,18 +458,20 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
                 msk2.iat[j1]=True  # select the one class to save, will be getting rid of the duplicate(s)
                 dfx.MyField[msk2] = 'SAVE'
                 dfx.Enrollment[msk2] = enx
+                dfx.Available[msk2] = avx
         dfx = dfx[~(dfx.MyField == 'DUPLICATE')]
 
     if verbose and len(dfx.index):
         if NSemestersShown == 0:
-            print('# Semester Subj Course-Section: Enrollment',end='')
+            print('# Semester Subj Course-Section: Enrollmentn [Available]',end='')
             print(' + more info!',end='')
             print('')
             NSemestersShown += 1
     
-        zz = zip(dfx.Semester,dfx.Subj,dfx.CatNo,dfx.Section,dfx.Enrollment,\
-                 dfx.Instructor,dfx.Component,dfx.Units,dfx.Title,dfx.Location)
-        for se,su,cno,sec,en,instr,comp,un,ti,loc in zz:
+        zz = zip(dfx.Semester,dfx.Subj,dfx.CatNo,dfx.Section,dfx.Enrollment,dfx.Available,\
+                 dfx.Instructor,dfx.Component,dfx.Units,dfx.Title,dfx.Location,\
+                 dfx.Days,dfx.Times,dfx.Requisites)
+        for se,su,cno,sec,en,av,instr,comp,un,ti,loc,da,tm,req in zz:
             #print(se,su,cno,sec,en,instr,comp,un,ti)
             #continue
             sesucno = '%3s %4s %4s'%(se,su,cno)
@@ -412,22 +482,28 @@ def do_enrollment(df,subjlist=Subject,merge_xlist=Merge_CrossList,merge_cotaught
                 if len(cno)<4 and int(en)<1 and not show_all_sections:
                     continue
                 print('%-18s'%(sesucno),end='')
-            print(' %7s   '%(en),end='')
+            # print(' %7s   '%(en),end='')
+            print(' %7s %7s  '%(en,'['+av+']'),end='')
             moin = ''
             if long_list:
+                moin += '"%s"; '%(ti)
+                if len(comp): moin += '%s; '%(comp)
+                if len(loc):  moin += '%s; '%(loc)
+                if len(da):  moin += '%s %s; '%(da,tm)
+                if len(req):  moin += 'Req=%s; '%(req)
                 instr = instr.replace('|','; ')
-                moin += '"%s"; comp=%s; loc=%s; %s'%(ti,comp,loc,instr)
+                moin += '%s'%(instr)
             else:
                 instr = informal_names(instr)
-                moin += '%-26s %s '%(ti,instr)
+                moin += '%-26s %-7s %s '%(ti,da,instr)
             print('%s'%(moin),end='')
             print('')
     return dfx
 
-FacLis = []
 FacEn = {}
+FacuNID = {}
 
-def do_faclist(df,summary=False,summarysort="a-z"):
+def do_instructorlist(df,summary=False,summarysort="a-z",verbose=True):
     global CatNoFilter, InstrFilter
     if summary:
         fl = [f for f in FacEn]
@@ -438,14 +514,19 @@ def do_faclist(df,summary=False,summarysort="a-z"):
             enfl = sorted(zip(en,fl))
             fl = [f for e,f in enfl]
         for f in fl:
+            if len(fl) and FacEn[f]<=0:
+                continue
+            print(FacuNID[f]+'@utah.edu', end=' ')
             print(f,' total enrollment:',FacEn[f])
         return
-    facnames = []
-    for fac in df.Instructor:
+    facnames,unids = [],[]
+    for fac,unid in zip(df.Instructor,df.uNID):
         for f in fac.split('|'):
             facnames.append(f)
+        for u in unid.split('|'):
+            unids.append(u)
     facnames = sorted(list(set(facnames)))
-    for f in facnames:
+    for f,u in zip(facnames,unids):
         if len(InstrFilter):
             ok = False
             for inf in InstrFilter:
@@ -463,39 +544,64 @@ def do_faclist(df,summary=False,summarysort="a-z"):
                 FacEn[f] += enx
             else:
                 FacEn[f] = enx
-            print('%s: %s %s %s-%s %s '%(f,sm,su,cn,se,en))
+            FacuNID[f] = u
+            if verbose:
+                print('%s: %s %s %s-%s %s '%(f,sm,su,cn,se,en))
             
-datadir = 'Data' # subdir off of working dir where we keep csv files so we do not have to (slowly) hit CIS
+datadir = 'ClassSchedData' # subdir off of working dir where we keep csv files so we do not have to (slowly) hit CIS
+
+if not os.path.isdir(datadir):
+    if os.path.isdir(os.path.expanduser('~bromley')+'/ClassSched/'):
+        datadir = os.path.expanduser('~bromley')+'/ClassSched/ClassSchedData' # ok, dis is where i keep it
 
 if len(sys.argv) > 1:
     showparms()
 
+camp = Campus
+
+if camp == 'uac':
+    savethedata = False
+    
 for sem in Semester:
     semnm = semx(sem)
     totsem,schsem = 0,0
     dfsem = pd.DataFrame(columns=columns) # includes all subjects
+    pastcensus = AtCensus(sem)
     for subj in Subject:
-        if subj=='ASTR' and int(sem) < 1074: continue
-        
-        fname = datadir+'/ClassSched'+str(sem)+'_'+subj+'.csv'
-        if savethedata and os.path.isfile(fname):
+        if subj=='ASTR' and int(sem) < 1074:
+            continue
+        if camp == 'uac' and int(sem) < 1198:
+            continue
+        fbase = '/ClassSched'
+        fbase += camp #
+        fname = datadir+fbase+str(sem)+'_'+subj+'.csv'
+        if savethedata and os.path.isfile(fname) and pastcensus:
             df = pd.read_csv(fname, sep=',',na_filter= False,dtype=str)
         else:
             if not os.path.isdir(datadir):
-                print('please "mkdir Data" so we have a place to put saved data. or change savethedata to False.')
+                print('please "mkdir ClassSchedData" to put saved data. or change savethedata to False.')
                 quit()
             # get main class schedule info
-            df = getClassSched(sem,subj)
+            df = getClassSched(sem,subj,camp)
             # add in enrollment info
-            dfen = getEnrollment(sem,subj)
-            # merge enrollment data and classsched data. 
-            for i,classno in enumerate(df.ClassNo): # bromley you C coward
-                en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
-                df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available 
-            print('# writing to',fname)
-            df.to_csv(fname,sep=',')
+            dfen = getEnrollment(sem,subj,camp)
+            # merge enrollment data and classsched data.
+            if len(dfen):
+                for i,classno in enumerate(df.ClassNo): # bromley you C coward
+                    en = dfen.loc[dfen['ClassNo'] == classno].iloc[0]
+                    df.iloc[i].Cap,df.iloc[i].Wait,df.iloc[i].Enrollment,df.iloc[i].Available = en.Cap,en.Wait,en.Enrollment,en.Available
+            if savethedata:
+                # check if permission!
+                if os.access(datadir, os.W_OK):
+                    print('# writing to',fname)
+                    df.to_csv(fname,sep=',')
+                else:
+                    pass
+#                    warn?
 
-        dfsem = dfsem.append(df)
+
+        #dfsem = dfsem.append(df)
+        dfsem = pd.concat([dfsem,df])
 
     Filtered = len(InstrFilter) or len(CatNoFilter)
     if "enroll" in mode:
@@ -511,13 +617,14 @@ for sem in Semester:
             en, sch = do_census(dfx)
             if np.sum(en):
                 print('#',semnm,'total enrollment, SCH:',np.sum(np.array(en)),np.sum(np.array(sch)))
-            
-
-    if "faculty" in mode:
+    if "instructors" in mode:
         dfx = do_enrollment(dfsem,verbose=False)
-        do_faclist(dfx)
-        
-do_faclist('',summary=True,summarysort="enrollment")
+        # this just collects the info in some horrible globals...
+        verbose =  False if "listinstructors" in mode else True
+        do_instructorlist(dfx,verbose=verbose)
+
+if '-listinstructors' in mode:
+    do_instructorlist('',summary=True,summarysort="enrollment")
 
 if len(sys.argv) == 1:
     showparms()
